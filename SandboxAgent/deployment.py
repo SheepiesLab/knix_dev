@@ -279,6 +279,44 @@ class Deployment:
             self._logger.info("Started function worker: %s, pid: %s, with stdout/stderr redirected to: %s", state_name, str(process.pid), filename)
         return error
 
+    def _start_execution_manager(self, eman_params, env_var_list):
+        error = None
+        custom_env = os.environ.copy()
+
+        for env_var in env_var_list:
+            idx = env_var.find("=")
+            if idx == -1:
+                continue
+            env_var_key = env_var[0:idx]
+            env_var_value = env_var[idx+1:]
+            custom_env[env_var_key] = env_var_value
+
+        #self._logger.info("environment variables (after user env vars): %s", str(custom_env))
+
+        if self._python_version >= (3, ):
+            cmd = "python3 "
+        else:
+            cmd = "python "
+        cmd = cmd + "/opt/mfn/FunctionWorker/python/ExecutionManager.py"
+        cmd = cmd + " " + '\"/opt/mfn/workflow/eman_params.json\"' # state_name can contain whitespace
+
+        filename = '/opt/mfn/logs/execution_manager.log'
+        log_handle = open(filename, 'a')
+
+        # store command arguments for when/if we need to restart the process if it fails
+        command_args_map = {}
+        command_args_map["command"] = cmd
+        command_args_map["custom_env"] = custom_env
+        command_args_map["log_filename"] = filename
+
+        #self._logger.info("Starting function worker: " + state_name + "  with stdout/stderr redirected to: " + filename)
+        error, process = process_utils.run_command(cmd, self._logger, custom_env=custom_env, process_log_handle=log_handle)
+        if error is None:
+            self._execution_manager_process = process
+            self._child_process_command_args_map[process.pid] = command_args_map
+            self._logger.info("Started execution manager, pid: %s, with stdout/stderr redirected to: %s", str(process.pid), filename)
+        return error
+
     def _start_function_worker(self, worker_params, runtime, env_var_list):
         error = None
 
@@ -573,6 +611,23 @@ class Deployment:
         global_dlc = DataLayerClient(locality=1, is_wf_private=True, sid=self._sandboxid, wid=self._workflowid, connect=self._datalayer, init_tables=True)
         global_dlc.shutdown()
 
+    def _populate_execution_manager_params(self):
+        eman_params = {}
+        eman_params["queue"] = self._queue
+        eman_params["sandboxid"] = self._sandboxid
+        eman_params["workflowid"] = self._workflowid
+        eman_params["workflowexit"] = self._workflow.getWorkflowExitPoint()
+        eman_params["workflowentry"] = self._workflow.getWorkflowEntryTopic()
+        eman_params["hostname"] = self._hostname
+        eman_params["userid"] = self._userid
+        eman_params["workflowname"] = self._workflowname
+        eman_params["workerparams"] = self._worker_params
+        eman_params["workerstates"] = self._worker_states
+        eman_params["workflowtopics"] = list(self._workflow.getWorkflowTopics())
+
+        return eman_params
+
+
     def _populate_worker_params(self, function_topic, wf_node, state):
         worker_params = {}
         worker_params["userid"] = self._userid
@@ -859,6 +914,8 @@ class Deployment:
             any_java_function = False
 
         total_time_state = 0.0
+        self._worker_params = {}
+        self._worker_states = {}
         for function_topic in workflow_nodes:
             wf_node = workflow_nodes[function_topic]
             resource_name = wf_node.get_resource_name()
@@ -891,6 +948,9 @@ class Deployment:
             # store worker parameters as a local file
             params_filename = state["dirpath"] + "worker_params.json"
 
+            self._worker_params[function_topic] = worker_params
+            self._worker_states[function_topic] = state
+
             with open(params_filename, "w") as paramsf:
                 json.dump(worker_params, paramsf, indent=4)
 
@@ -908,17 +968,32 @@ class Deployment:
                     with open(java_params_filename, "w") as javaparamsf:
                         json.dump(java_worker_params, javaparamsf, indent=4)
 
-            # launch function workers with the params parsed from workflow info
-            error = self._start_function_worker(worker_params, state["resource_runtime"], state["resource_env_var_list"])
+            # # launch function workers with the params parsed from workflow info
+            # error = self._start_function_worker(worker_params, state["resource_runtime"], state["resource_env_var_list"])
 
-            if error is not None:
-                errmsg = "Problem launching function worker for: " + worker_params["fname"]
-                self._logger.error(errmsg)
-                has_error = True
-                return has_error, errmsg
+            # if error is not None:
+            #     errmsg = "Problem launching function worker for: " + worker_params["fname"]
+            #     self._logger.error(errmsg)
+            #     has_error = True
+            #     return has_error, errmsg
 
-            # add the new function worker to the local list
-            self._workflow.addLocalFunction(function_topic)
+            # # add the new function worker to the local list
+            # self._workflow.addLocalFunction(function_topic)
+        
+        self._local_queue_client.addTopic(self._workflow.topicPrefix + "-MFNExecutionManager")
+        eman_params = self._populate_execution_manager_params()
+
+        params_filename = "/opt/mfn/workflow/eman_params.json"
+
+        with open(params_filename, "w") as paramsf:
+            json.dump(eman_params, paramsf, indent=4)
+        error = self._start_execution_manager(eman_params, [])
+        if error is not None:
+            errmsg = "Could not create execution manager: " + str(error)
+            self._logger.error(errmsg)
+            has_error = True
+            return has_error, errmsg
+
 
         # all function workers have been launched; update them with locally running functions
         # prepare update message to be used by all

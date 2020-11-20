@@ -43,6 +43,8 @@ class PublicationUtils():
         self._wf_function_list = wflist
         self._wf_exit = wfexit
 
+        self._eman_topic = self._prefix + "MFNExecutionManager"
+
         # whether we should store backups of triggers before publishing the output
         self._should_checkpoint = cpon
 
@@ -401,6 +403,8 @@ class PublicationUtils():
             # next == self._recovery_manager_topic:
             return self._publish_privileged_output(trigger, lqcpub)
         else:
+            if next == self._wf_exit:
+                next = next + "-em"
             topic_next = self._prefix + next
 
             output = {}

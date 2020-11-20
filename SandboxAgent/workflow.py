@@ -679,6 +679,39 @@ class Workflow:
             return [wnode.getGWFType(), wnode.getGWFStateName(), wnode.getGWFStateInfo()]
         return [""]
 
+    def getWorkflowUnits(self):
+        try:
+            return self.workflowUnits
+        except:
+            wfnode_nexts = {}
+            wfnode_nonexts = {}
+            for function_topic in self.workflowNodeMap:
+                wf_node = self.workflowNodeMap[function_topic]
+                wf_next_topic = ""
+                if len(wf_node.getNextMap()) == 1:
+                    wf_next_topic = self.topicPrefix + list(wf_node.getNextMap().keys())[0]
+                if wf_next_topic in self.getWorkflowNodeMap():
+                    wfnode_nexts[function_topic] = wf_next_topic
+                else:
+                    wfnode_nonexts[function_topic] = wf_next_topic
+
+            wf_units = {}
+            for k, v in wfnode_nexts.items():
+                unit = [k] + wf_units.pop(v, [v])
+                wfnode_nonexts.pop(v, None)
+                wf_units[k] = unit
+
+            for k, v in wfnode_nonexts.items():
+                wf_units[k] = [k]
+
+            for k, v in wf_units.items():
+                lastNode = self.getWorkflowNode(v[-1])
+                potNextTopics = [self.topicPrefix + i for i in lastNode.getPotentialNextMap().keys()]
+                wf_units[k] = WorkflowUnit(k, v, potNextTopics)
+                
+            self.workflowUnits = wf_units
+            return wf_units
+
     def getSandboxId(self):
         return self.sandboxId
 
@@ -738,3 +771,40 @@ class Workflow:
 
     def are_checkpoints_enabled(self):
         return self._enable_checkpoints
+
+class WorkflowUnit:
+    def __init__(self, start_function_topic, unit_function_topics, potential_next_unit_topics):
+        self._topic = start_function_topic
+        self._functionTopics = unit_function_topics
+        self._potentialNextUnitTopics = potential_next_unit_topics
+        self._worker_params = {}
+        self._worker_states = {}
+
+    def getFunctionTopics(self):
+        return self._functionTopics
+
+    def getPotentialNextUnitTopics(self):
+        return self._potentialNextUnitTopics
+
+    def getEntryTopic(self):
+        return self._topic
+    
+    def putFunctionParams(self, topic, params):
+        if topic in self._functionTopics:
+            self._worker_params[topic] = params
+    
+    def getFunctionParams(self, topic):
+        return self._worker_params[topic]
+
+    def getAllFunctionParams(self):
+        return self._worker_params
+    
+    def putFunctionState(self, topic, state):
+        if topic in self._functionTopics:
+            self._worker_states[topic] = state
+    
+    def getFunctionState(self, topic):
+        return self._worker_states[topic]
+
+    def getAllFunctionStates(self):
+        return self._worker_states
