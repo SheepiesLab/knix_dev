@@ -473,7 +473,7 @@ if __name__ == "__main__":
 
             with open("start_management.sh", "w") as f:
                 #f.write("docker run --network host -d --ulimit nofile=262144:262144 --name Management --env-file .env --log-opt max-size=500m --log-opt max-file=5 microfn/sandbox\n")
-                f.write("docker run -d --ulimit nofile=262144:262144 --name Management --env-file .env --log-opt max-size=500m --log-opt max-file=5 -P -p " + str(MANAGEMENT_SERVICE_EXPOSED_PORT) + ":8080 microfn/sandbox\n")
+                f.write("docker run --privileged -d --ulimit nofile=262144:262144 --name Management --env-file .env --log-opt max-size=500m --log-opt max-file=5 -P -p " + str(MANAGEMENT_SERVICE_EXPOSED_PORT) + ":8080 microfn/sandbox\n")
             os.chmod("start_management.sh", 0o0775)
 
         DLCLIENT.shutdown()
