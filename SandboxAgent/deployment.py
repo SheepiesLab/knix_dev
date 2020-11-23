@@ -623,7 +623,6 @@ class Deployment:
         eman_params["workflowname"] = self._workflowname
         eman_params["workerparams"] = self._worker_params
         eman_params["workerstates"] = self._worker_states
-        eman_params["workflowtopics"] = list(self._workflow.getWorkflowTopics())
 
         return eman_params
 

@@ -1,6 +1,7 @@
 import process_utils
 from LocalQueueClient import LocalQueueClient
 from LocalQueueClientMessage import LocalQueueClientMessage
+from PoolPolicy import FixedPoolPolicy
 
 import os
 import sys
@@ -9,25 +10,60 @@ import json
 SINGLE_JVM_FOR_FUNCTIONS = True
 
 
+class PoolBusyException(Exception):
+    pass
+
+
 class FunctionWorkerPool:
-    def __init__(self, worker_params, state, queue, logger, initial_target):
+    def __init__(self, topic, worker_params, state, queue, logger, initial_target, pool_policy):
         self._workers = {}
+        self._workers_in_use = {}
         self._logger = logger
         self._worker_params = worker_params
         self._state = state
         self._queue = queue
+        self._topic = topic
+        self._policy = pool_policy(self)
         self._local_queue_client = LocalQueueClient(connect=self._queue)
         for _ in range(initial_target):
             self.add_worker()
 
     def add_worker(self):
-        new_worker = FunctionWorkerHandle(self._worker_params, self._state, self._queue, self._logger)
+        new_worker = FunctionWorkerHandle(
+            self._worker_params, self._state, self._queue, self._logger)
         if not new_worker.failed():
             self._workers[new_worker.getpid()] = new_worker
 
+    def allocate_worker(self):
+        if len(self._workers) > 0:
+            for pid, worker_handle in self._workers.items():
+                self._workers.pop(pid)
+                self._workers_in_use[pid] = worker_handle
+                self._policy.on_pool_allocate()
+                return pid, worker_handle
+        else:
+            realloc = self._policy.on_pool_busy()
+            if realloc:
+                return self.allocate_worker()
+            else:
+                raise PoolBusyException
+
+    def free_worker(self, pid):
+        if pid in self._workers_in_use.keys():
+            handle = self._workers_in_use.pop(pid)
+            self._workers[pid] = handle
+            self._policy.on_pool_free()
+
+    def update_workers(self, update):
+        for w in self._workers.values():
+            w.update(json.dumps(update))
+
+    def tick(self):
+        self._policy.on_pool_tick()
+
     def _exit(self):
-        for pid, worker_handle in self._workers.items():
-            worker_handle._exit()
+        for w in self._workers.values():
+            w._exit()
 
 
 class FunctionWorkerHandle:
@@ -50,7 +86,6 @@ class FunctionWorkerHandle:
         else:
             self._logger.error(error)
             self._failed = True
-        
 
     def failed(self):
         return self._failed
@@ -153,54 +188,79 @@ class FunctionWorkerHandle:
         return error, pyprocess, jvprocess
 
     def _wait_for_child_processes(self):
-        output, error = process_utils.run_command_return_output('pgrep -P ' + str(os.getpid()), self._logger)
+        output, error = process_utils.run_command_return_output(
+            'pgrep -P ' + str(os.getpid()), self._logger)
         if error is not None:
-            self._logger.error("[FunctionWorkerPool] wait_for_child_processes: Failed to get children process ids: %s", str(error))
+            self._logger.error(
+                "[FunctionWorkerPool] wait_for_child_processes: Failed to get children process ids: %s", str(error))
             return
 
         children_pids = set(output.split())
-        self._logger.info("[FunctionWorkerPool] wait_for_child_processes: Parent pid: %s, Children pids: %s", str(os.getpid()), str(children_pids))
+        self._logger.info("[FunctionWorkerPool] wait_for_child_processes: Parent pid: %s, Children pids: %s", str(
+            os.getpid()), str(children_pids))
 
         if self._jvprocess is not None:
             if str(self._jvprocess.pid) in children_pids:
                 children_pids.remove(str(self._jvprocess.pid))
-                self._logger.info("[FunctionWorkerPool] wait_for_child_processes: Not waiting on JavaRequestHandler pid: %s", str(self._jvprocess.pid))
+                self._logger.info("[FunctionWorkerPool] wait_for_child_processes: Not waiting on JavaRequestHandler pid: %s", str(
+                    self._jvprocess.pid))
 
         if not children_pids:
-            self._logger.info("[FunctionWorkerPool] wait_for_child_processes: No remaining pids to wait for")
+            self._logger.info(
+                "[FunctionWorkerPool] wait_for_child_processes: No remaining pids to wait for")
             return
 
         while True:
             try:
                 cpid, status = os.waitpid(-1, 0)
-                self._logger.info("[FunctionWorkerPool] wait_for_child_processes: Status changed for pid: %s, Status: %s", str(cpid), str(status))
+                self._logger.info(
+                    "[FunctionWorkerPool] wait_for_child_processes: Status changed for pid: %s, Status: %s", str(cpid), str(status))
                 if str(cpid) not in children_pids:
                     #print('wait_for_child_processes: ' + str(cpid) + "Not found in children_pids")
                     continue
                 children_pids.remove(str(cpid))
                 if not children_pids:
-                    self._logger.info("[FunctionWorkerPool] wait_for_child_processes: No remaining pids to wait for")
+                    self._logger.info(
+                        "[FunctionWorkerPool] wait_for_child_processes: No remaining pids to wait for")
                     break
             except Exception as exc:
-                self._logger.error('[FunctionWorkerPool] wait_for_child_processes: %s', str(exc))
+                self._logger.error(
+                    '[FunctionWorkerPool] wait_for_child_processes: %s', str(exc))
 
     def _exit(self):
         shutdown_message = {}
         shutdown_message["action"] = "stop"
 
-        lqcm_shutdown = LocalQueueClientMessage(key="0l", value=json.dumps(shutdown_message))
-        ack = self._local_queue_client.addMessage(self._topic, lqcm_shutdown, True)
+        lqcm_shutdown = LocalQueueClientMessage(
+            key="0l", value=json.dumps(shutdown_message))
+        ack = self._local_queue_client.addMessage(
+            self._topic, lqcm_shutdown, True)
         while not ack:
-            ack = self._local_queue_client.addMessage(self._topic, lqcm_shutdown, True)
+            ack = self._local_queue_client.addMessage(
+                self._topic, lqcm_shutdown, True)
 
         self._logger.info("Waiting for function workers to shutdown")
         self._wait_for_child_processes()
 
         if self._jvprocess is not None:
-            process_utils.terminate_and_wait_child(self._jvprocess, "JavaRequestHandler", 5, self._logger)
+            process_utils.terminate_and_wait_child(
+                self._jvprocess, "JavaRequestHandler", 5, self._logger)
 
         self._local_queue_client.shutdown()
         pass
+
+    def update(self, value):
+        lqcm = LocalQueueClientMessage(key="0l", value=value)
+        ack = self._local_queue_client.addMessage(self._topic, lqcm, True)
+        while not ack:
+            ack = self._local_queue_client.addMessage(self._topic, lqcm, True)
+
+    def execute(self, key, encapsulated_value):
+        lqcm = LocalQueueClientMessage(key=key, value=encapsulated_value)
+        ack = self._local_queue_client.addMessage(self._topic, lqcm, True)
+        while not ack:
+            ack = self._local_queue_client.addMessage(self._topic, lqcm, True)
+        self._logger.info("Execution request for %s to worker %s", key, self._topic)
 
     def swapout(self):
         pass
@@ -209,7 +269,4 @@ class FunctionWorkerHandle:
         pass
 
     def inswap_ready(self):
-        pass
-
-    def state(self):
         pass

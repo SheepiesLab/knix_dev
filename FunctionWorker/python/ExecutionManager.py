@@ -2,6 +2,10 @@ from LocalQueueClient import LocalQueueClient, LocalQueueMessage
 from LocalQueueClientMessage import LocalQueueClientMessage
 from FunctionWorkerPool import FunctionWorkerPool
 from MicroFunctionsLogWriter import MicroFunctionsLogWriter
+from PublicationUtils import PublicationUtils
+from StateUtils import StateUtils
+from ResourceAllocationPolicy import PreAllocateResourcePolicy
+from PoolPolicy import FixedPoolPolicy
 
 import py3utils
 
@@ -10,6 +14,7 @@ import sys
 import logging
 import socket
 import time
+import queue
 
 LOGGER_HOSTNAME = 'hostname-unset'
 LOGGER_CONTAINERNAME = 'containername-unset'
@@ -52,19 +57,28 @@ class ExecutionManager:
         self._workflowname = eman_args["workflowname"]
         self._worker_params = eman_args["workerparams"]
         self._worker_states = eman_args["workerstates"]
-        self._workflow_topics = eman_args["workflowtopics"]
+        self._new_execution_queue = queue.Queue(0) # TODO configure max queue size
 
         self._topic = self._sandboxid + "-" + self._workflowid + "-MFNExecutionManager"
         self._setup_loggers()
 
         self._executions = {}
+        self._prefix = self._sandboxid + "-" + self._workflowid + "-"
 
         self._pools = {}
-        for topic in self._workflow_topics:
+        for topic in self._worker_params.keys():
             self._pools[topic] = FunctionWorkerPool(
-                self._worker_params[topic], self._worker_states[topic], self._queue, self._logger,  5)
+                topic, self._worker_params[topic], self._worker_states[topic], self._queue, self._logger,  5, FixedPoolPolicy)
 
         self._local_queue_client = LocalQueueClient(connect=self._queue)
+        self._exit_topic = self._prefix + self._wf_exit
+        self._exit_listen_topic = self._exit_topic + '-em'
+        self._entry_listen_topic = self._wf_entry
+        self._local_queue_client.addTopic(self._exit_listen_topic)
+        self._listen_topics = list(self._worker_params.keys())
+        self._listen_topics.remove(self._entry_listen_topic)
+        
+
 
     def _setup_loggers(self):
         global LOGGER_HOSTNAME
@@ -78,7 +92,6 @@ class ExecutionManager:
         LOGGER_USERID = self._userid
         LOGGER_WORKFLOWNAME = self._workflowname
         LOGGER_WORKFLOWID = self._workflowid
-``
         self._logger = logging.getLogger(self._topic)
         self._logger.setLevel(logging.INFO)
         self._logger.addFilter(LoggingFilter())
@@ -98,7 +111,14 @@ class ExecutionManager:
         sys.stderr = MicroFunctionsLogWriter(self._logger, logging.ERROR)
 
     def _add_new_execution(self, key, value):
-        self._executions[key] = Execution(key, value)
+        try:
+            self._executions[key] = Execution(key, value, self._entry_listen_topic, self._worker_params, self._pools, PreAllocateResourcePolicy)
+        except NoResourceAvailableException as e:
+            try:
+                self._new_execution_queue.put_nowait((key, value))
+            except queue.Full:
+                pass
+            raise e
 
     def _process_update(self, value):
         try:
@@ -109,6 +129,9 @@ class ExecutionManager:
 
             if action == "stop":
                 self._exit()
+            elif action == "update-local-functions":
+                for p in self._pools.values():
+                    p.update_workers(update)
         except Exception as exc:
             self._logger.error(
                 "Could not parse update message: %s; ignored...", str(exc))
@@ -121,18 +144,39 @@ class ExecutionManager:
             if key == "0l":
                 self._process_update(value)
             else:
-                self._add_new_execution(key, value)
-                self._logger.info("New Execution %s", key)
+                try:
+                    self._add_new_execution(key, value)
+                    self._logger.info("New Execution %s created", key)
+                except NoResourceAvailableException:
+                    self._logger.info("New Execution %s in queue", key)
+
         except Exception as exc:
             self._logger.exception("Exception in handling: %s", str(exc))
             sys.stdout.flush()
 
-    def _handle_self_message(self, lqm):
+    def _handle_exit_message(self, lqm):
         try:
             lqcm = LocalQueueClientMessage(lqm=lqm)
             key = lqcm.get_key()
             value = lqcm.get_value()
-            self._executions[key].on_worker_return(value)
+            self._executions[key].on_exit_return(value)
+            self._executions.pop(key)
+            self._logger.info("Execution exit: %s", key)
+        except Exception as exc:
+            self._logger.exception("Exception in handling: %s", str(exc))
+            sys.stdout.flush()
+
+    def _handle_function_progress_message(self, lqm):
+        try:
+            lqcm = LocalQueueClientMessage(lqm=lqm)
+            key = lqcm.get_key()
+            value = lqcm.get_value()
+            if key == "0l":
+                self._process_update(value)
+                self._logger.info("Process update")
+            else:
+                self._executions[key].on_worker_progress(value)
+                self._logger.info("Execution progress: %s", key)
         except Exception as exc:
             self._logger.exception("Exception in handling: %s", str(exc))
             sys.stdout.flush()
@@ -141,14 +185,43 @@ class ExecutionManager:
         return self._local_queue_client.getMessage(topic, self._POLL_TIMEOUT)
 
     def _loop(self):
+        # Try kill the queue
+        while True:
+            key, value = (None, None)
+            try:
+                key, value = self._new_execution_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            try:
+                self._add_new_execution(key, value)
+                self._logger.info("New Execution %s created", key)
+            except NoResourceAvailableException:
+                self._logger.info("New Execution %s in queue", key)
+                break
+
         # Read EntryTopic, create new Execution for requests
-        lqm = self._get_message(self._wf_entry)
+        lqm = self._get_message(self._entry_listen_topic)
         if lqm is not None:
+            self._logger.info("New Entry Message")
             self._handle_entry_message(lqm)
+
         # Read ExecutionManagerTopic, update executions accordingly
-        lqm = self._get_message(self._topic)
+        for t in self._listen_topics:
+            lqm = self._get_message(t)
+            if lqm is not None:
+                self._logger.info("New Progress Message")
+                self._handle_function_progress_message(lqm)
+
+        # Read ExitTopic
+        lqm = self._get_message(self._exit_listen_topic)
         if lqm is not None:
-            self._handle_self_message(lqm)
+            self._logger.info("New Exit Message")
+            self._handle_exit_message(lqm)
+        
+        for e in self._executions.values():
+            e.tick()
+        
 
     def _exit(self):
         for topic, pool in self._pools.items():
@@ -167,18 +240,43 @@ class ExecutionManager:
         while self._running:
             self._loop()
 
+class NoResourceAvailableException(Exception):
+    pass
 
 class Execution:
-    def __init__(self, key, encapsulated_value):
-        pass
+    def __init__(self, key, encapsulated_value, entry_topic, worker_params, pools, resource_policy):
+        self._key = key
+        self._policy = resource_policy(entry_topic, worker_params, pools)
+        self._resource_map = self._policy.on_execution_init()
+        self._exec_queue = []
+        self.on_worker_progress([{
+            "next": entry_topic,
+            "value": encapsulated_value
+        }])
 
-    def on_worker_return(self, value):
+    def on_worker_progress(self, value):
+        remaining = []
         for output in value:
             next_topic = output["next"]
             encapsulated_value = output["value"]
-        # Determine resource requests
-        # Determine next execution
-        pass
+            self._resource_map = self._policy.on_execution_progress(next_topic)
+            if next_topic in self._resource_map:
+                self._resource_map[next_topic][1].execute(self._key, encapsulated_value)
+            else:
+                remaining.append(output)
+        if len(remaining) > 0:
+            self._exec_queue.append(remaining)
+
+    def on_exit_return(self, value):
+        self._policy.on_execution_exit()
+
+    def tick(self):
+        self._resource_map = self._policy.on_execution_tick()
+        q = self._exec_queue
+        self._exec_queue = []
+        for v in q:
+            self.on_worker_progress(v)
+
 
 
 def main():

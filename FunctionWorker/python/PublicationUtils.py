@@ -403,8 +403,6 @@ class PublicationUtils():
             # next == self._recovery_manager_topic:
             return self._publish_privileged_output(trigger, lqcpub)
         else:
-            if next == self._wf_exit:
-                next = next + "-em"
             topic_next = self._prefix + next
 
             output = {}
@@ -423,13 +421,14 @@ class PublicationUtils():
             else:
                 # check if 'next' is exit topic
                 if next == self._wf_exit:
+                    self._send_local_queue_message(lqcpub, self._prefix + self._wf_exit + '-em', key, output["value"])
                     key = self._metadata["__execution_id"]
 
                     dlc = self.get_backup_data_layer_client()
 
                     # store the workflow's final result
                     dlc.put("result_" + key, output["value"])
-                    #self._logger.debug("[__mfn_backup] [exitresult] [%s] %s", "result_" + key, output["value"])
+                    self._logger.info("[__mfn_backup] [exitresult] [%s] %s", "result_" + key, output["value"])
 
                     # _XXX_: this is not handled properly by the frontend
                     # this was an async execution
