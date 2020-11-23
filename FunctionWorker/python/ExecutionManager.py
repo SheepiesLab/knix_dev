@@ -121,7 +121,7 @@ class ExecutionManager:
                 pass
             raise e
 
-    def _process_update(self, value):
+    def _process_update(self, topic, value):
         try:
             update = json.loads(value)
             action = update["action"]
@@ -131,8 +131,7 @@ class ExecutionManager:
             if action == "stop":
                 self._exit()
             elif action == "update-local-functions":
-                for p in self._pools.values():
-                    p.update_workers(update)
+                self._pools[topic].update_workers(value)
         except Exception as exc:
             self._logger.error(
                 "Could not parse update message: %s; ignored...", str(exc))
@@ -167,16 +166,16 @@ class ExecutionManager:
             self._logger.exception("Exception in handling: %s", str(exc))
             sys.stdout.flush()
 
-    def _handle_function_progress_message(self, lqm):
+    def _handle_function_progress_message(self, topic, lqm):
         try:
             lqcm = LocalQueueClientMessage(lqm=lqm)
             key = lqcm.get_key()
             value = lqcm.get_value()
             if key == "0l":
-                self._process_update(value)
+                self._process_update(topic, value)
                 self._logger.info("Process update")
             else:
-                self._executions[key].on_worker_progress(value)
+                self._executions[key].on_worker_progress(topic, value)
                 self._logger.info("Execution progress: %s", key)
         except Exception as exc:
             self._logger.exception("Exception in handling: %s", str(exc))
@@ -209,7 +208,7 @@ class ExecutionManager:
             lqm = self._get_message(t)
             if lqm is not None:
                 self._logger.info("New Progress Message")
-                self._handle_function_progress_message(lqm)
+                self._handle_function_progress_message(t, lqm)
 
         # Read ExitTopic
         lqm = self._get_message(self._exit_listen_topic)
@@ -247,23 +246,14 @@ class Execution:
         self._policy = resource_policy(entry_topic, worker_params, pools)
         self._resource_map = self._policy.on_execution_init()
         self._exec_queue = []
-        self.on_worker_progress([{
-            "next": entry_topic,
-            "value": encapsulated_value
-        }])
+        self.on_worker_progress(entry_topic, encapsulated_value)
 
-    def on_worker_progress(self, value):
-        remaining = []
-        for output in value:
-            next_topic = output["next"]
-            encapsulated_value = output["value"]
-            self._resource_map = self._policy.on_execution_progress(next_topic)
-            if next_topic in self._resource_map:
-                self._resource_map[next_topic][1].execute(self._key, encapsulated_value)
-            else:
-                remaining.append(output)
-        if len(remaining) > 0:
-            self._exec_queue.append(remaining)
+    def on_worker_progress(self, topic, value):
+        self._resource_map = self._policy.on_execution_progress(topic)
+        if topic in self._resource_map:
+            self._resource_map[topic][1].execute(self._key, value)
+        else:
+            self._exec_queue.append((topic, value))
 
     def on_exit_return(self, value):
         self._policy.on_execution_exit()
@@ -272,8 +262,8 @@ class Execution:
         self._resource_map = self._policy.on_execution_tick()
         q = self._exec_queue
         self._exec_queue = []
-        for v in q:
-            self.on_worker_progress(v)
+        for t, v in q:
+            self.on_worker_progress(t, v)
 
 
 

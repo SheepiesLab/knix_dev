@@ -103,7 +103,7 @@ class FunctionWorker:
                 except Exception as exc:
                     self._logger.exception("Exception loading user code: %s", str(exc))
                     sys.stdout.flush()
-                    os._exit(1)
+                    # os._exit(1)
 
         # for retrieving new messages
         self.local_queue_client = LocalQueueClient(connect=self._queue)
@@ -550,12 +550,12 @@ class FunctionWorker:
             except Exception as exc:
                 self._logger.exception("Publication exception: %s\n%s", str(instance_pid), str(exc))
                 sys.stdout.flush()
-                os._exit(1)
+                # os._exit(1)
 
         except Exception as exc:
             if instance_pid == 0:
                 self._logger.exception("Child exception: %s", str(exc))
-                os._exit(1)
+                # os._exit(1)
             else:
                 self._logger.exception("Fork exception: %s", str(instance_pid))
                 self._logger.exception(str(exc))
@@ -587,7 +587,7 @@ class FunctionWorker:
         except Exception as exc:
             self._logger.exception("Exception in handling: %s", str(exc))
             sys.stdout.flush()
-            os._exit(1)
+            # os._exit(1)
 
     def _get_and_handle_message(self):
         lqm = self.local_queue_client.getMessage("{}-{}".format(self._function_topic, os.getpid()), self._POLL_TIMEOUT)

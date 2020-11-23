@@ -52,6 +52,6 @@ ADD build/FunctionWorker.tar.gz /opt/mfn/
 ADD build/LoggingService.tar.gz /opt/mfn/
 
 RUN chown mfn:mfn -R /opt/mfn
-USER mfn
+# USER mfn
 WORKDIR /opt/mfn
 CMD ["python3", "/opt/mfn/SandboxAgent/sandboxagent.py"]

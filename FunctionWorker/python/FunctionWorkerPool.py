@@ -6,6 +6,7 @@ from PoolPolicy import FixedPoolPolicy
 import os
 import sys
 import json
+import time
 
 SINGLE_JVM_FOR_FUNCTIONS = True
 
@@ -27,6 +28,9 @@ class FunctionWorkerPool:
         self._local_queue_client = LocalQueueClient(connect=self._queue)
         for _ in range(initial_target):
             self.add_worker()
+        for h in self._workers.values():
+            h.swapout()
+
 
     def add_worker(self):
         new_worker = FunctionWorkerHandle(
@@ -40,6 +44,7 @@ class FunctionWorkerPool:
                 self._workers.pop(pid)
                 self._workers_in_use[pid] = worker_handle
                 self._policy.on_pool_allocate()
+                worker_handle.swapin()
                 return pid, worker_handle
         else:
             realloc = self._policy.on_pool_busy()
@@ -52,11 +57,12 @@ class FunctionWorkerPool:
         if pid in self._workers_in_use.keys():
             handle = self._workers_in_use.pop(pid)
             self._workers[pid] = handle
+            handle.swapout()
             self._policy.on_pool_free()
 
-    def update_workers(self, update):
+    def update_workers(self, value):
         for w in self._workers.values():
-            w.update(json.dumps(update))
+            w.update(value)
 
     def tick(self):
         self._policy.on_pool_tick()
@@ -83,6 +89,7 @@ class FunctionWorkerHandle:
             self._topic = "{}-{}".format(worker_params["ftopic"], self._pid)
             self._local_queue_client = LocalQueueClient(connect=self._queue)
             self._local_queue_client.addTopic(self._topic)
+            self.setup_cgroup()
         else:
             self._logger.error(error)
             self._failed = True
@@ -247,7 +254,7 @@ class FunctionWorkerHandle:
                 self._jvprocess, "JavaRequestHandler", 5, self._logger)
 
         self._local_queue_client.shutdown()
-        pass
+        self.unset_cgroup()
 
     def update(self, value):
         lqcm = LocalQueueClientMessage(key="0l", value=value)
@@ -262,11 +269,43 @@ class FunctionWorkerHandle:
             ack = self._local_queue_client.addMessage(self._topic, lqcm, True)
         self._logger.info("Execution request for %s to worker %s", key, self._topic)
 
-    def swapout(self):
-        pass
+    def setup_cgroup(self):
+        os.mkdir("/sys/fs/cgroup/memory/{}".format(self._pid))
+        with open("/sys/fs/cgroup/memory/{}/memory.move_charge_at_immigrate".format(self._pid), "w") as f:
+            f.write("1")
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "w") as f:
+            f.write(str(17179869184))
+        with open("/sys/fs/cgroup/memory/{}/cgroup.procs".format(self._pid), "w") as f:
+            f.write(str(self._pid))
+        # self.swapout()
+
+    def unset_cgroup(self):
+        with open("/sys/fs/cgroup/memory/memory.move_charge_at_immigrate", "w") as f:
+            f.write("1")
+        with open("/sys/fs/cgroup/memory/cgroup.procs", "w") as f:
+            f.write(str(self._pid))
+        os.rmdir("/sys/fs/cgroup/memory/{}".format(self._pid))
+
+    def swapout(self, min_resident_mem=262144):
+        mem = 1073741824
+        while mem >= min_resident_mem:
+            try:
+                with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "w") as f:
+                    f.write(str(mem))
+                mem = int(mem / 2)
+            except:
+                break
+        with open("/sys/fs/cgroup/memory/memory.swappiness", "w") as f:
+            f.write(str(100))
 
     def swapin(self):
-        pass
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "w") as f:
+            f.write(str(17179869184))
+        with open("/sys/fs/cgroup/memory/memory.swappiness", "w") as f:
+            f.write(str(60))
 
     def inswap_ready(self):
-        pass
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "w") as f:
+            f.write(str(17179869184))
+        with open("/sys/fs/cgroup/memory/memory.swappiness", "w") as f:
+            f.write(str(60))
