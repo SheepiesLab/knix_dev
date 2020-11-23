@@ -45,7 +45,7 @@ class LoggingFilter(logging.Filter):
 class ExecutionManager:
     def __init__(self, eman_args):
 
-        self._POLL_TIMEOUT = py3utils.ensure_long(10000)
+        self._POLL_TIMEOUT = py3utils.ensure_long(50)
 
         self._queue = eman_args["queue"]
         self._sandboxid = eman_args["sandboxid"]
@@ -65,11 +65,6 @@ class ExecutionManager:
         self._executions = {}
         self._prefix = self._sandboxid + "-" + self._workflowid + "-"
 
-        self._pools = {}
-        for topic in self._worker_params.keys():
-            self._pools[topic] = FunctionWorkerPool(
-                topic, self._worker_params[topic], self._worker_states[topic], self._queue, self._logger,  5, FixedPoolPolicy)
-
         self._local_queue_client = LocalQueueClient(connect=self._queue)
         self._exit_topic = self._prefix + self._wf_exit
         self._exit_listen_topic = self._exit_topic + '-em'
@@ -77,6 +72,12 @@ class ExecutionManager:
         self._local_queue_client.addTopic(self._exit_listen_topic)
         self._listen_topics = list(self._worker_params.keys())
         self._listen_topics.remove(self._entry_listen_topic)
+        self._logger.info("Execution Manager listening for exit on topic %s", self._exit_listen_topic)
+
+        self._pools = {}
+        for topic in self._worker_params.keys():
+            self._pools[topic] = FunctionWorkerPool(
+                topic, self._worker_params[topic], self._worker_states[topic], self._queue, self._logger,  5, FixedPoolPolicy)
         
 
 
@@ -186,19 +187,16 @@ class ExecutionManager:
 
     def _loop(self):
         # Try kill the queue
-        while True:
-            key, value = (None, None)
-            try:
+        try:
+            while True:
+                key, value = (None, None)
                 key, value = self._new_execution_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            try:
                 self._add_new_execution(key, value)
                 self._logger.info("New Execution %s created", key)
-            except NoResourceAvailableException:
-                self._logger.info("New Execution %s in queue", key)
-                break
+        except queue.Empty:
+            pass
+        except NoResourceAvailableException:
+            self._logger.info("New Execution %s in queue", key)
 
         # Read EntryTopic, create new Execution for requests
         lqm = self._get_message(self._entry_listen_topic)

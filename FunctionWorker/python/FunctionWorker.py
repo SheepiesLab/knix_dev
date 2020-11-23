@@ -546,7 +546,6 @@ class FunctionWorker:
                 if session_utils is not None and self._is_session_function:
                     session_utils.cleanup()
 
-                os._exit(0)
 
             except Exception as exc:
                 self._logger.exception("Publication exception: %s\n%s", str(instance_pid), str(exc))

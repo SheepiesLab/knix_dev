@@ -421,6 +421,7 @@ class PublicationUtils():
             else:
                 # check if 'next' is exit topic
                 if next == self._wf_exit:
+                    self._logger.info("Notify Execution Manager for exit on topic %s", self._prefix + self._wf_exit + '-em')
                     self._send_local_queue_message(lqcpub, self._prefix + self._wf_exit + '-em', key, output["value"])
                     key = self._metadata["__execution_id"]
 
