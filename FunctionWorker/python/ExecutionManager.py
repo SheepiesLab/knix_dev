@@ -4,7 +4,7 @@ from FunctionWorkerPool import FunctionWorkerPool
 from MicroFunctionsLogWriter import MicroFunctionsLogWriter
 from PublicationUtils import PublicationUtils
 from StateUtils import StateUtils
-from ResourceAllocationPolicy import PreAllocateResourcePolicy
+from ResourceAllocationPolicy import PreAllocateResourcePolicy, OnDemandAllocateResourcePolicy
 from PoolPolicy import FixedPoolPolicy
 
 import py3utils

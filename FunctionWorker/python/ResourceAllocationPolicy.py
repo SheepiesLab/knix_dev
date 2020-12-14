@@ -43,3 +43,28 @@ class PreAllocateResourcePolicy(BaseResourceAllocationPolicy):
     def on_execution_exit(self):
         for topic in self._worker_params.keys():
             self._pools[topic].free_worker(self._resource_map[topic][0])
+
+class OnDemandAllocateResourcePolicy(BaseResourceAllocationPolicy):
+    def __init__(self, entry_topic, worker_params, pools):
+        super().__init__(entry_topic, worker_params, pools)
+
+    def on_execution_init(self):
+        return self.on_execution_progress(self._entry_topic)
+
+    def on_execution_tick(self):
+        return self._resource_map
+
+    def on_execution_progress(self, next_topic):
+        while True:
+            try:
+                if next_topic in self._resource_map:
+                    break
+                self._resource_map[next_topic] = self._pools[next_topic].allocate_worker()
+                break
+            except PoolBusyException:
+                pass
+        return self._resource_map
+
+    def on_execution_exit(self):
+        for topic in self._worker_params.keys():
+            self._pools[topic].free_worker(self._resource_map[topic][0])
