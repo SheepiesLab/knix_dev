@@ -6,3 +6,9 @@ proxy.mk
 .classpath
 .project
 .metadata
+.env
+.out
+*.pyc
+*.tar.gz
+.vscode/*
+tests/settings.json
