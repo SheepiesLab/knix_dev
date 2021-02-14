@@ -19,13 +19,14 @@ TESTS := $(TESTDIRS:%/=%)
 .PHONY: $(TESTS)
 
 all: $(TESTS)
+	cat failed_tests.log || echo "all passed"
 
 quick: helloworld
 asl: asl_*
 java: java_*
 
 $(TESTS):
-	cd $@; PYTHONPATH=../../mfn_sdk python3 -m unittest discover -v
+	-cd $@ && PYTHONPATH=../../mfn_sdk python3 -m unittest discover -v > $@.log 2>&1 || echo $@ >> ../failed_tests.log
 
 settings:
 	if [ ! -e settings.json ]; then \

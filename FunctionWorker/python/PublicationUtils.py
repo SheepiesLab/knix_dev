@@ -293,7 +293,20 @@ class PublicationUtils():
 
         self._sapi._shutdown_data_layer_client()
 
+
+    def _get_topic_map(self, key, topic):
+        #TODO SWAP topic map
+        return topic
+        # dlc = self._sapi._get_data_layer_client()
+        # dl_map_topic = key + "_topic_map"
+        # while True:
+        #     try:
+        #         return dlc.getMapEntry(dl_map_topic, topic)
+        #     except:
+        #         pass
+
     def _send_local_queue_message(self, lqcpub, lqtopic, key, value):
+        lqtopic = self._get_topic_map(key, lqtopic) # SWAP will wait indefinitely
         # construct a LocalQueueClientMessage(key, value)
         # and send it to the local queue topic via the local queue client
         lqcm = LocalQueueClientMessage(key=key, value=value)

@@ -68,7 +68,9 @@ datalayer.yaml: ../../DataLayerService/target/datalayerservice.jar
 	touch $@
 
 # sandbox.yaml and dependencies
-../../Sandbox/sandbox_deployment_package.tar.gz:
+SANDBOX_SRC:=../../Sandbox
+SANDBOXFILES:=$(shell find $(SANDBOX_SRC) | grep -v "sandbox_deployment_package.tar.gz")
+../../Sandbox/sandbox_deployment_package.tar.gz: $(SANDBOXFILES)
 	cd ../../Sandbox/; make build; cd -
 	tar -czf $@ -C ../../Sandbox \
                 Dockerfile \

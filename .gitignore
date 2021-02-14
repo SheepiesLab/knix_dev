@@ -12,3 +12,4 @@ proxy.mk
 *.tar.gz
 .vscode/*
 tests/settings.json
+tests/**/*.log
