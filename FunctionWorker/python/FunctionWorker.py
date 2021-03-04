@@ -624,6 +624,8 @@ class FunctionWorker:
             value = lqcm.get_value()
             if key == "0l":
                 self._process_update(value)
+            elif key == "fork":
+                instance_pid, timestamp_map, _, _ = self._fork()
             else:
                 self._fork_and_handle_message(key, value)
         except Exception as exc:
